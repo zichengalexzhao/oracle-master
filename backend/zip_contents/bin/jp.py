@@ -1,4 +1,4 @@
-#!/Users/zichengzhao/.local/share/virtualenvs/backend-Kpmy9wCS/bin/python
+#!/usr/bin/python3.11
 
 import sys
 import json
