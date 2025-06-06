@@ -88,6 +88,13 @@ HIDDEN_STEMS = {
 geolocator = Nominatim(user_agent="oracle_master", timeout=15)
 tf = TimezoneFinder()
 
+# Define detect_language function
+def detect_language(text):
+    # Simple detection: if text contains Chinese characters, return 'zh', else 'en'
+    if any('\u4e00' <= char <= '\u9fff' for char in text):
+        return 'zh'
+    return 'en'
+
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_fixed(5),
@@ -225,7 +232,7 @@ def extract_location(text):
         return text.strip()
     return None
 
-def extract_category(text):
+def extract_category(text, lang):
     love_pattern_en = r'\b(love|relationship|marriage|partner|boyfriend|girlfriend|spouse)\b'
     career_pattern_en = r'\b(career|job|work|employment|business|promotion)\b'
     health_pattern_en = r'\b(health|wellbeing|well-being|illness|disease)\b'
@@ -236,19 +243,20 @@ def extract_category(text):
     
     text_lower = text.lower() if lang == 'en' else text
     
-    if re.search(love_pattern_en, text_lower):
-        return 'love'
-    if re.search(career_pattern_en, text_lower):
-        return 'career'
-    if re.search(health_pattern_en, text_lower):
-        return 'health'
-    
-    if re.search(love_pattern_zh, text):
-        return 'love'
-    if re.search(career_pattern_zh, text):
-        return 'career'
-    if re.search(health_pattern_zh, text):
-        return 'health'
+    if lang == 'en':
+        if re.search(love_pattern_en, text_lower):
+            return 'love'
+        if re.search(career_pattern_en, text_lower):
+            return 'career'
+        if re.search(health_pattern_en, text_lower):
+            return 'health'
+    else:
+        if re.search(love_pattern_zh, text):
+            return 'love'
+        if re.search(career_pattern_zh, text):
+            return 'career'
+        if re.search(health_pattern_zh, text):
+            return 'health'
     
     return None
 
@@ -338,7 +346,7 @@ def conversational_response(query, session, lang, current_question=None):
     conversation_history.append({"role": "user", "content": query})
 
     system_prompt = SYSTEM_PROMPT_EN if lang == 'en' else SYSTEM_PROMPT_ZH
-    current_time = "2025-06-06 10:20:00 PDT"
+    current_time = "2025-06-06 11:41:00 PDT"
 
     full_prompt = f"""
     {system_prompt}
@@ -504,7 +512,7 @@ def lambda_handler(event, context):
     # Check if query contains all necessary information
     birth_datetime = extract_datetime(query)
     location = extract_location(query)
-    category = extract_category(query)
+    category = extract_category(query, lang)
 
     if birth_datetime and location and category:
         session['necessary_answers'] = {
@@ -533,7 +541,7 @@ def lambda_handler(event, context):
         }
 
     if session['current_question_index'] == 0 and 'category' not in session:
-        extracted_category = extract_category(query)
+        extracted_category = extract_category(query, lang)
         if extracted_category:
             session['category'] = extracted_category
 
