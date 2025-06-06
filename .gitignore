@@ -1,7 +1,10 @@
-*.pyc
+node_modules/
 __pycache__/
+*.pyc
+.env
+Pipfile
+Pipfile.lock
 *.zip
 zip_contents/
 lambda_package/
 lambda_package_new/
-.DS_Store
