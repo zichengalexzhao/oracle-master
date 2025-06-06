@@ -1,8 +1,8 @@
-from functions_framework import http
+import azure.functions as func
 import json
 import re
-from google.cloud import aiplatform
-from google.cloud.aiplatform.gapic.schema import predict
+import os
+from openai import AzureOpenAI
 import pytz
 from datetime import datetime, timedelta
 import ephem
@@ -11,7 +11,6 @@ from timezonefinder import TimezoneFinder
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from requests.exceptions import ReadTimeout
 
-# 四柱和五行相关常量
 JD_ORIGIN = 2427879.5
 GAN_LIST = ["Jia", "Yi", "Bing", "Ding", "Wu", "Ji", "Geng", "Xin", "Ren", "Gui"]
 ZHI_LIST = ["Zi", "Chou", "Yin", "Mao", "Chen", "Si", "Wu", "Wei", "Shen", "You", "Xu", "Hai"]
@@ -30,11 +29,9 @@ HIDDEN_STEMS = {
     "You": ["Xin"], "Xu": ["Wu", "Ding", "Xin"], "Hai": ["Ren", "Jia"]
 }
 
-# 初始化 geopy 和 timezonefinder
 geolocator = Nominatim(user_agent="oracle_master", timeout=15)
 tf = TimezoneFinder()
 
-# 产品推荐数据
 PRODUCTS = [
     {
         "name": "Golden Pixiu Statue",
@@ -147,7 +144,7 @@ def extract_year(query):
     wait=wait_fixed(5),
     retry=retry_if_exception_type(Exception)
 )
-def parse_birth_datetime(query, client, endpoint):
+def parse_birth_datetime(query, client):
     prompt = f"""
     Extract the birth date and time from the following user input and convert it to ISO 8601 format (e.g., "1990-03-12T15:00:00Z").
     If the time is missing or approximate, use a reasonable default (e.g., 12:00 for "around noon").
@@ -155,9 +152,14 @@ def parse_birth_datetime(query, client, endpoint):
     User input: {query}
     Respond with the ISO 8601 format string or an error message.
     """
-    instance = predict.instance.TextGenerationPredictionInstance(content=prompt).to_value()
-    response = client.predict(endpoint=endpoint, instances=[instance], parameters={"maxOutputTokens": 50, "timeout": 30})
-    birth_datetime = response.predictions[0].content.strip()
+    response = client.chat.completions.create(
+        model="gpt-4",  # 替换为实际部署的模型名称
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=50
+    )
+    birth_datetime = response.choices[0].message.content.strip()
     if "error" in birth_datetime.lower():
         raise ValueError(birth_datetime)
     return birth_datetime
@@ -167,16 +169,21 @@ def parse_birth_datetime(query, client, endpoint):
     wait=wait_fixed(5),
     retry=retry_if_exception_type(Exception)
 )
-def parse_location(query, client, endpoint):
+def parse_location(query, client):
     prompt = f"""
     Extract the city name from the following user input.
     If a city is not specified, return "San Francisco" as the default.
     User input: {query}
     Respond with the city name only.
     """
-    instance = predict.instance.TextGenerationPredictionInstance(content=prompt).to_value()
-    response = client.predict(endpoint=endpoint, instances=[instance], parameters={"maxOutputTokens": 50, "timeout": 30})
-    city = response.predictions[0].content.strip()
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=50
+    )
+    city = response.choices[0].message.content.strip()
     return city
 
 @retry(
@@ -184,7 +191,7 @@ def parse_location(query, client, endpoint):
     wait=wait_fixed(5),
     retry=retry_if_exception_type(Exception)
 )
-def call_vertex_ai(data, query, client, endpoint):
+def call_azure_openai(data, query, client):
     prompt = f"""
     You are an expert in Chinese Four Pillars of Destiny. Based on:
     Four Pillars: {json.dumps(data['fourPillars'])}
@@ -198,32 +205,45 @@ def call_vertex_ai(data, query, client, endpoint):
     If the birth time is approximate (e.g., set to a default like 12:00), add a note:
     - **Note**: Since your exact birth time is unknown, we used 12:00 PM as a default. This may affect the accuracy of your Hour Pillar, but your Year, Month, and Day Pillars are still reliable for this reading.
     """
-    instance = predict.instance.TextGenerationPredictionInstance(content=prompt).to_value()
-    response = client.predict(endpoint=endpoint, instances=[instance], parameters={"maxOutputTokens": 500, "timeout": 60})
-    return response.predictions[0].content
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=500
+    )
+    return response.choices[0].message.content
 
-@http
-def chatbot(request):
+def chatbot(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        req_body = request.get_json()
+        req_body = req.get_json()
         query = req_body.get("query")
-        # 初始化 Vertex AI 客户端（需要替换为实际的端点）
-        client = aiplatform.gapic.PredictionServiceClient(client_options={"api_endpoint": "us-central1-aiplatform.googleapis.com"})
-        endpoint = client.endpoint_path(project="disco-catcher-461916-c0", location="us-central1", endpoint="your-endpoint-id")
+        # 初始化 Azure OpenAI 客户端
+        client = AzureOpenAI(
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version="2023-05-15"
+        )
         # 解析出生时间和城市
-        birth_datetime = parse_birth_datetime(query, client, endpoint)
-        city = parse_location(query, client, endpoint)
-        # 假设用户提供了经纬度（后续可以扩展）
-        location = {"city": city, "longitude": 0.0}  # 默认经度，后续动态获取
-        # 调用 CalculatePillars
+        birth_datetime = parse_birth_datetime(query, client)
+        city = parse_location(query, client)
+        location = {"city": city, "longitude": 0.0}
         four_pillars_data = {
             "fourPillars": get_four_pillars(birth_datetime, location),
             "fiveElements": get_five_elements(get_four_pillars(birth_datetime, location))
         }
         parsed_query = parse_query(query)
-        response = call_vertex_ai(four_pillars_data, query, client, endpoint)
+        response = call_azure_openai(four_pillars_data, query, client)
         product = next((p for p in PRODUCTS if p["element"] == parsed_query["product_element"]), PRODUCTS[0])
         response += f"\n**Product Recommendation**: Try the {product['name']}, {product['description']} [Buy now: {product['link']}]."
-        return json.dumps({"response": response})
+        return func.HttpResponse(
+            json.dumps({"response": response}),
+            status_code=200,
+            mimetype="application/json"
+        )
     except Exception as e:
-        return json.dumps({"error": str(e)}), 400
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            status_code=400,
+            mimetype="application/json"
+        )

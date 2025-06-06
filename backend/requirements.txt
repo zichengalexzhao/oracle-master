@@ -1,8 +1,6 @@
-functions-framework
 pytz
 pyephem
 requests
-google-cloud-aiplatform
 geopy
 timezonefinder
 tenacity
